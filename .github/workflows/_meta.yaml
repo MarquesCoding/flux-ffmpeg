@@ -51,11 +51,6 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build
-    # Attaching an asset to the release is a write to repository contents. The
-    # default token is read-only unless a workflow asks, and upstream never had
-    # to ask because its packages left over ssh instead.
-    permissions:
-      contents: write
     strategy:
       fail-fast: true
       matrix:

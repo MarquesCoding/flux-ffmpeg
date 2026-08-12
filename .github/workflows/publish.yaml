@@ -12,6 +12,11 @@ on:
 # needs no credentials at all.
 jobs:
   build_publish_debian:
+    # Attaching an asset to the release is a write to repository contents, and
+    # the default token is read-only unless a workflow asks. Granted here on the
+    # caller, which the called workflow's jobs then inherit.
+    permissions:
+      contents: write
     uses: ./.github/workflows/_meta.yaml
     with:
       distro: 'debian'
