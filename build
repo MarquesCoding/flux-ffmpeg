@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 usage() {
-    echo -e "Build Jellyfin FFMPEG deb packages"
+    echo -e "Build Flux FFmpeg deb packages"
     echo -e " $0 <release> <arch>"
     echo -e "Releases:          Arches:"
     echo -e " * bullseye         * amd64"
@@ -91,7 +91,7 @@ for dep in ${container_cmd} make mmv; do
     command -v "${dep}" &>/dev/null || { echo "The command '${dep}' is required."; exit 1; }
 done
 
-image_name="jellyfin-ffmpeg-build-${cli_release}"
+image_name="flux-ffmpeg-build-${cli_release}"
 package_temporary_dir="$( mktemp -d )"
 
 # Trap cleanup for latter sections

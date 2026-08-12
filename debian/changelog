@@ -1,3 +1,17 @@
+flux-ffmpeg (8.1.2-2flux1) unstable; urgency=medium
+
+  * Fork of jellyfin-ffmpeg 8.1.2-2 for Flux.
+  * Renamed the package and install prefix to flux-ffmpeg.
+  * Dropped the transitional maintainer scripts, which migrated from Jellyfin
+    package names this one has never been installed under.
+  * Dropped the Replaces and Conflicts on jellyfin-ffmpeg. Nothing collides now
+    that the prefix differs, and declaring them would stop a host running Flux
+    and Jellyfin side by side.
+  * Build and publish Debian only, attaching packages to the GitHub release
+    rather than pushing to repo.jellyfin.org.
+
+ -- Flux <noreply@users.noreply.github.com>  Wed, 12 Aug 2026 16:00:00 +0000
+
 jellyfin-ffmpeg (8.1.2-2) unstable; urgency=medium
 
   * Add d3d11 overlay/tonemap/transpose/deint/scale filters
