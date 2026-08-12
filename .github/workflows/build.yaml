@@ -5,8 +5,8 @@ concurrency:
   cancel-in-progress: true
 
 # `flux` carries Flux's patches on top of FFmpeg, the way upstream used a branch
-# named `jellyfin` for theirs. `master` still tracks FFmpeg itself, so naming
-# this one `main` would have read as though it were the FFmpeg trunk.
+# named `jellyfin` for theirs. Named for what it holds rather than `main`, which
+# would have read as though it were FFmpeg's own trunk.
 on:
   push:
     branches:

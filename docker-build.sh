@@ -373,7 +373,7 @@ prepare_extra_common() {
         libva_drv_arch_path="/usr/lib/x86_64-linux-gnu/dri"
     fi
     sed -i "s#secure_getenv(\"LIBVA_DRIVERS_PATH\")#\"/usr/lib/flux-ffmpeg/lib/dri:${libva_drv_arch_path}:/usr/lib/dri:/usr/local/lib/dri\"#g" va/va.c
-    sed -i "s#secure_getenv(\"LIBVA_DRIVER_NAME\")#secure_getenv(\"LIBVA_DRIVER_NAME_JELLYFIN\")#g" va/va.c
+    sed -i "s#secure_getenv(\"LIBVA_DRIVER_NAME\")#secure_getenv(\"LIBVA_DRIVER_NAME_FLUX\")#g" va/va.c
     ./autogen.sh
     ./configure \
         ${CROSS_OPT} \
