@@ -5,9 +5,90 @@
 set -o errexit
 set -o xtrace
 
+# Without this, a failed download in a pipeline is invisible: the pipeline
+# reports whatever the last command said, so a fetch that returned nothing was
+# reported by `git apply` as "no valid patches" and the real fault was two
+# commands upstream. Both of the first two release builds were lost that way.
+set -o pipefail
+
 DEBIAN_ADDR=http://deb.debian.org/debian/
 UBUNTU_ARCHIVE_ADDR=http://archive.ubuntu.com/ubuntu/
 UBUNTU_PORTS_ADDR=http://ports.ubuntu.com/ubuntu-ports/
+
+# How hard to try before giving up on somebody else's server.
+#
+# Every source in this build is fetched from a host that owes us nothing, and a
+# build that has already spent an hour compiling should not be thrown away
+# because one of them was briefly busy. Measured cause: two consecutive builds
+# died on two different downloads from github.com, one of them a 503 after
+# wget's default three attempts.
+#
+# Eight attempts twenty seconds apart is a little over two minutes of patience
+# against two and a half hours of rebuild.
+FETCH_TRIES=8
+FETCH_WAIT=20
+
+# Downloads a URL to a file, retrying, and says so when it cannot.
+#
+# `--retry-on-http-error` is the important part: wget does not treat a 503 as
+# worth retrying unless told, and 503 and 429 are exactly what a busy or
+# rate-limiting host answers with.
+fetch() {
+    local url="$1"
+    local target="$2"
+
+    wget \
+        --tries=${FETCH_TRIES} \
+        --waitretry=${FETCH_WAIT} \
+        --timeout=60 \
+        --retry-connrefused \
+        --retry-on-host-error \
+        --retry-on-http-error=408,429,500,502,503,504 \
+        -nv \
+        -O "${target}" \
+        "${url}"
+}
+
+# Applies a patch fetched from a URL, using whatever tool is named after it.
+#
+# Downloaded to a file and checked before use rather than piped straight in. An
+# empty download is a download failure and should say so, not become a confusing
+# complaint from the tool that was handed nothing.
+#
+#   apply_remote_patch URL git apply
+#   apply_remote_patch URL patch -p1 -d some-directory
+#   apply_remote_patch URL sh -c "sed 's#a#b#' | patch -p1 -d some-directory"
+apply_remote_patch() {
+    local url="$1"
+    shift
+
+    local patch_file
+    patch_file="$(mktemp)"
+
+    if ! fetch "${url}" "${patch_file}"; then
+        echo "apply_remote_patch: could not download ${url}" >&2
+        rm -f "${patch_file}"
+        return 1
+    fi
+
+    if [[ ! -s "${patch_file}" ]]; then
+        echo "apply_remote_patch: ${url} downloaded empty" >&2
+        rm -f "${patch_file}"
+        return 1
+    fi
+
+    local outcome=0
+
+    "$@" < "${patch_file}" || outcome=$?
+
+    rm -f "${patch_file}"
+
+    if [[ ${outcome} -ne 0 ]]; then
+        echo "apply_remote_patch: ${url} would not apply" >&2
+    fi
+
+    return ${outcome}
+}
 
 # Prepare common extra libs for amd64 and arm64
 prepare_extra_common() {
@@ -32,7 +113,7 @@ prepare_extra_common() {
     pushd iconv
     iconv_ver="1.19"
     iconv_link="https://mirrors.edge.kernel.org/gnu/libiconv/libiconv-${iconv_ver}.tar.gz"
-    wget ${iconv_link} -O iconv.tar.gz
+    fetch ${iconv_link} iconv.tar.gz
     tar xaf iconv.tar.gz
     pushd libiconv-${iconv_ver}
     ./configure \
@@ -198,7 +279,7 @@ prepare_extra_common() {
     git clone -b v1.2.0 --depth=1 https://github.com/xiph/theora.git
     pushd theora
     # autotools: relax autoconf requirement to 2.69
-    wget -q -O - https://github.com/xiph/theora/commit/3ae2669.patch | git apply
+    apply_remote_patch https://github.com/xiph/theora/commit/3ae2669.patch git apply
     ./autogen.sh
     ./configure \
         ${CROSS_OPT} \
@@ -217,7 +298,7 @@ prepare_extra_common() {
     pushd fftw3
     fftw3_ver="3.3.11"
     fftw3_link="https://fftw.org/fftw-${fftw3_ver}.tar.gz"
-    wget ${fftw3_link} -O fftw3.tar.gz
+    fetch ${fftw3_link} fftw3.tar.gz
     tar xaf fftw3.tar.gz
     pushd fftw-${fftw3_ver}
     if [ "${ARCH}" = "amd64" ]; then
@@ -314,7 +395,7 @@ prepare_extra_common() {
     pushd fdk-aac-stripped
     fdk_aac_ver="stripped5"
     fdk_aac_link="https://gitlab.freedesktop.org/wtaymans/fdk-aac-stripped/-/archive/${fdk_aac_ver}/fdk-aac-stripped-${fdk_aac_ver}.tar.gz"
-    wget ${fdk_aac_link} -O fdk-aac-stripped.tar.gz
+    fetch ${fdk_aac_link} fdk-aac-stripped.tar.gz
     tar xaf fdk-aac-stripped.tar.gz
     pushd fdk-aac-stripped-${fdk_aac_ver}
     ./autogen.sh
@@ -344,7 +425,7 @@ prepare_extra_common() {
     pushd libdrm
     libdrm_ver="libdrm-2.4.131"
     libdrm_link="https://gitlab.freedesktop.org/mesa/libdrm/-/archive/${libdrm_ver}/libdrm-${libdrm_ver}.tar.gz"
-    wget ${libdrm_link} -O libdrm.tar.gz
+    fetch ${libdrm_link} libdrm.tar.gz
     tar xaf libdrm.tar.gz
     meson setup libdrm-${libdrm_ver} drm_build \
         ${MESON_CROSS_OPT} \
@@ -489,19 +570,23 @@ prepare_extra_common() {
         pushd mesa
         mesa_ver="mesa-26.0.8"
         mesa_link="https://gitlab.freedesktop.org/mesa/mesa/-/archive/${mesa_ver}/mesa-${mesa_ver}.tar.gz"
-        wget ${mesa_link} -O mesa.tar.gz
+        fetch ${mesa_link} mesa.tar.gz
         tar xaf mesa.tar.gz
         # Enable VAAPI VPP alpha blending support
-        wget -q -O - https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/41090.patch | \
+        apply_remote_patch \
+            https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/41090.patch \
             patch -p1 -d mesa-${mesa_ver}
         # Fix misc CSC issues in VAAPI VPP
-        wget -q -O - https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42181.patch | \
+        apply_remote_patch \
+            https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42181.patch \
             patch -p1 -d mesa-${mesa_ver}
         # Fix setting VPE rotation with horizontal flip enabled
-        wget -q -O - https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42408.patch | \
-            sed 's#/mm/#/#g' | patch -p1 -d mesa-${mesa_ver}
+        apply_remote_patch \
+            https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42408.patch \
+            sh -c "sed 's#/mm/#/#g' | patch -p1 -d mesa-${mesa_ver}"
         # Fix setting chroma swizzle mode in VK Video on GFX9
-        wget -q -O - https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42763.patch | \
+        apply_remote_patch \
+            https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42763.patch \
             patch -p1 -d mesa-${mesa_ver}
         meson setup mesa-${mesa_ver} mesa_build \
             ${MESON_CROSS_OPT} \
@@ -585,7 +670,7 @@ prepare_extra_amd64() {
     pushd amf-headers
     amf_ver="1.5.2"
     amf_link="https://github.com/GPUOpen-LibrariesAndSDKs/AMF/releases/download/v${amf_ver}/AMF-headers-v${amf_ver}.tar.gz"
-    wget ${amf_link} -O amf.tar.gz
+    fetch ${amf_link} amf.tar.gz
     tar xaf amf.tar.gz
     pushd amf-headers-v${amf_ver}/AMF
     mkdir -p /usr/include/AMF
@@ -625,11 +710,11 @@ prepare_extra_amd64() {
     git clone -b intel-mediasdk-23.2.2 --depth=1 https://github.com/Intel-Media-SDK/MediaSDK.git
     pushd MediaSDK
     # Fix build in gcc 13
-    wget -q -O - https://github.com/Intel-Media-SDK/MediaSDK/commit/8fb9f5f.patch | git apply
+    apply_remote_patch https://github.com/Intel-Media-SDK/MediaSDK/commit/8fb9f5f.patch git apply
     # Fix ADI issue with VPL patch
-    wget -q -O - https://github.com/intel/vpl-gpu-rt/commit/e025c82.patch | git apply
+    apply_remote_patch https://github.com/intel/vpl-gpu-rt/commit/e025c82.patch git apply
     # Fix missing entries in PicStruct validation with VPL patch
-    wget -q -O - https://github.com/intel/vpl-gpu-rt/commit/c7eb030.patch | git apply
+    apply_remote_patch https://github.com/intel/vpl-gpu-rt/commit/c7eb030.patch git apply
     sed -i 's|MFX_PLUGINS_CONF_DIR "/plugins.cfg"|"/usr/lib/flux-ffmpeg/lib/mfx/plugins.cfg"|g' api/mfx_dispatch/linux/mfxloader.cpp
     mkdir build && pushd build
     cmake -DCMAKE_INSTALL_PREFIX=${TARGET_DIR} \
@@ -673,7 +758,7 @@ prepare_extra_amd64() {
     git clone -b intel-onevpl-26.2.4 --depth=1 https://github.com/intel/vpl-gpu-rt.git
     pushd vpl-gpu-rt
     # Fix missing entries in PicStruct validation
-    wget -q -O - https://github.com/intel/vpl-gpu-rt/commit/c7eb030.patch | git apply
+    apply_remote_patch https://github.com/intel/vpl-gpu-rt/commit/c7eb030.patch git apply
     mkdir build && pushd build
     cmake -DCMAKE_INSTALL_PREFIX=${TARGET_DIR} \
           -DCMAKE_INSTALL_LIBDIR=${TARGET_DIR}/lib \
@@ -695,9 +780,9 @@ prepare_extra_amd64() {
     git clone -b intel-media-26.2.4 --depth=1 https://github.com/intel/media-driver.git
     pushd media-driver
     # Enable VC1 decode on DG2 (note that MTL+ is not supported)
-    wget -q -O - https://github.com/intel/media-driver/commit/e47702f.patch | git apply
+    apply_remote_patch https://github.com/intel/media-driver/commit/e47702f.patch git apply
     # Fix iHD crashes when used with Xe KMD on small BAR systems
-    wget -q -O - https://github.com/intel/media-driver/commit/6fd4037.patch | git apply
+    apply_remote_patch https://github.com/intel/media-driver/commit/6fd4037.patch git apply
     mkdir build && pushd build
     cmake -DCMAKE_INSTALL_PREFIX=${TARGET_DIR} \
           -DCMAKE_C_FLAGS="${CFLAGS} -Wno-error=array-bounds" \

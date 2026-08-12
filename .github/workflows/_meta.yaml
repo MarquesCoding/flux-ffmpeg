@@ -25,7 +25,15 @@ jobs:
     name: 'Build FFmpeg'
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: true
+      # Each of these takes around two and a half hours and none of them depends
+      # on another. Cancelling the rest when one fails only ever saved build
+      # minutes, and on a public repository there are none to save — so the
+      # trade was three finished builds for a few minutes of a runner.
+      #
+      # It was not hypothetical: two release attempts each lost one job to a
+      # download from somebody else's server, and each took the other three
+      # healthy builds down with it.
+      fail-fast: false
       matrix:
         release: ${{fromJson(inputs.codenames)}}
         arch: ${{fromJson(inputs.architectures)}}
@@ -52,7 +60,10 @@ jobs:
     needs:
       - build
     strategy:
-      fail-fast: true
+      # One asset failing to upload is no reason to abandon the others: three
+      # attached debs are more use than none, and the missing one can be
+      # uploaded to the same release afterwards.
+      fail-fast: false
       matrix:
         release: ${{fromJson(inputs.codenames)}}
         arch: ${{fromJson(inputs.architectures)}}
