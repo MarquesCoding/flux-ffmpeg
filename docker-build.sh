@@ -5,11 +5,21 @@
 set -o errexit
 set -o xtrace
 
-# Without this, a failed download in a pipeline is invisible: the pipeline
-# reports whatever the last command said, so a fetch that returned nothing was
-# reported by `git apply` as "no valid patches" and the real fault was two
-# commands upstream. Both of the first two release builds were lost that way.
-set -o pipefail
+# Deliberately no pipefail.
+#
+# It was added here and reverted the same evening, which is worth recording. The
+# fault it was meant to catch -- a failed download hidden by the pipeline
+# reporting what the tool downstream said -- is already gone, because patches are
+# fetched to a file and applied from it rather than piped in. Nothing left in
+# this script relies on a pipeline to carry a fetch failure.
+#
+# What it did instead was break `yes | apt-get` and `yes | mk-build-deps`: when
+# the consumer finishes, `yes` takes SIGPIPE and exits 141, and pipefail promotes
+# that to the pipeline's status for errexit to abort on. Both arm64 builds died
+# at the first, and both amd64 builds would have died at the second.
+#
+# There are 800 lines of inherited script here and no reason to believe those two
+# were the only pipelines that assume the old behaviour.
 
 DEBIAN_ADDR=http://deb.debian.org/debian/
 UBUNTU_ARCHIVE_ADDR=http://archive.ubuntu.com/ubuntu/
