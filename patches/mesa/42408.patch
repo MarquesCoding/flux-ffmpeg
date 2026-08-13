@@ -1,0 +1,31 @@
+From 485f06802aa5aa59ac3d6fe5f78dc44545f43151 Mon Sep 17 00:00:00 2001
+From: David Rosca <david.rosca@amd.com>
+Date: Tue, 23 Jun 2026 12:33:06 +0200
+Subject: [PATCH] radeonsi/mm: Fix setting VPE rotation when horizontal flip is
+ enabled
+
+0xF mask also includes PIPE_VIDEO_VPP_FLIP_HORIZONTAL.
+
+Fixes: ed176e2c715 ("amd, radeonsi: add si_vpe.c with helper functions of VPE lib")
+Reviewed-by: Peyton Lee <peytolee@amd.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42408>
+---
+ src/gallium/drivers/radeonsi/mm/si_vpe.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/radeonsi/mm/si_vpe.c b/src/gallium/drivers/radeonsi/mm/si_vpe.c
+index 4a2e41f819c2..7888676d6325 100644
+--- a/src/gallium/drivers/radeonsi/mm/si_vpe.c
++++ b/src/gallium/drivers/radeonsi/mm/si_vpe.c
+@@ -918,7 +918,7 @@ si_vpe_set_stream_in_param(struct vpe_video_processor *vpeproc,
+    color_adj->hue                      = 0.0;
+    color_adj->saturation               = 1.0;
+ 
+-   switch (process_properties->orientation & 0xF) {
++   switch (process_properties->orientation & 0x7) {
+    case PIPE_VIDEO_VPP_ROTATION_90:
+       stream->rotation = VPE_ROTATION_ANGLE_90;
+       break;
+-- 
+GitLab
+
