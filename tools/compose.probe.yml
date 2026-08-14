@@ -1,0 +1,50 @@
+# Hardware probe for a machine with no checkout — a NAS with a Dockge panel and
+# a graphics card in it.
+#
+#   docker compose -f compose.probe.yml run --rm probe
+#
+# Installs the flux-ffmpeg release deb into a plain Debian container, fetches
+# probeHardware.sh from this repository, and runs it against the card.
+#
+# The script is fetched rather than inlined. Inlining meant restating two
+# hundred lines inside a YAML string with every `$` doubled to survive Compose
+# interpolation, which is a second copy to keep in step and a silent-failure
+# mode when it drifts. This file only has to stay correct about two URLs.
+services:
+  probe:
+    image: debian:bookworm-slim
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      # The release whose deb gets probed. Must be a published release, not a
+      # branch build: workflow artifacts need credentials this container has not
+      # got.
+      VERSION: 8.1.2-2flux1
+      SUITE: bookworm
+      ARCH: amd64
+      # Which revision of the probe to run. A branch moves under you; prefer a
+      # tag or a commit SHA once one contains the script.
+      PROBE_REF: flux
+      FLUX_VAAPI_DEVICE: /dev/dri/renderD128
+    entrypoint: ['/bin/bash', '-euo', 'pipefail', '-c']
+    command:
+      - |
+        DEB="flux-ffmpeg_$${VERSION}-$${SUITE}_$${ARCH}.deb"
+        BASE=https://github.com/MarquesCoding/flux-ffmpeg
+        RAW=https://raw.githubusercontent.com/MarquesCoding/flux-ffmpeg
+
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq
+        apt-get install -y -qq --no-install-recommends ca-certificates curl pciutils >/dev/null
+
+        echo "=== installing $${DEB} ==="
+        curl -fsSL --retry 5 -o /tmp/flux.deb "$${BASE}/releases/download/v$${VERSION}/$${DEB}"
+        apt-get install -y -qq --no-install-recommends /tmp/flux.deb >/dev/null
+
+        echo "=== fetching probeHardware.sh @ $${PROBE_REF} ==="
+        curl -fsSL --retry 5 -o /tmp/probe.sh "$${RAW}/$${PROBE_REF}/tools/probeHardware.sh"
+        # An empty or truncated download must say so here, not become a
+        # confusing complaint from bash forty lines later.
+        test -s /tmp/probe.sh || { echo "probe script downloaded empty" >&2; exit 1; }
+
+        exec bash /tmp/probe.sh
