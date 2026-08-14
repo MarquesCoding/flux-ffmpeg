@@ -324,4 +324,40 @@ else
   printf '  could not build an HDR sample, so tone mapping was not tested\n'
 fi
 
+# The chains above ask what the hardware can do. This asks what Flux will
+# decide about it, by running the probe the service runs — tone_map_probe_
+# arguments in apps/transcoder/src/capability.rs, kept in step with this by
+# hand like the rest.
+#
+# Worth reporting separately because the two answers differ on purpose. A card
+# that cannot tone map is not a fault to fix; it is a machine that converts HDR
+# in software, which is what every machine did until recently. What would be a
+# fault is Flux believing otherwise, and this is the line that says which.
+heading 'what Flux will conclude about tone mapping'
+
+if printf '%s\n' "$LISTED_FILTERS" | grep -qx tonemap_vaapi; then
+  tonemap_status=0
+  tonemap_complaint="$("$FFMPEG" -hide_banner -loglevel error \
+    -init_hw_device "vaapi=va:$DEVICE" -filter_hw_device va \
+    -f lavfi -i "testsrc2=size=${PROBE_SIZE}:rate=1" -frames:v 1 \
+    -vf 'format=p010,hwupload,tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709' \
+    -f null - 2>&1 >/dev/null)" || tonemap_status=$?
+
+  if [ "$tonemap_status" -eq 0 ]; then
+    printf '  HDR converts on the device\n'
+  else
+    printf '  HDR converts in software — the filter would not run\n'
+    printf '    %s\n' "$(last_line "$tonemap_complaint")"
+
+    # Only where there was a device to refuse it. Without one this says nothing
+    # about the driver, and naming a vendor would be a guess dressed as a
+    # finding.
+    if [ -e "$DEVICE" ]; then
+      printf '    expected on AMD: VAAPI VPP tone mapping is an Intel capability\n'
+    fi
+  fi
+else
+  printf '  HDR converts in software — this build has no tonemap_vaapi\n'
+fi
+
 heading 'done'
