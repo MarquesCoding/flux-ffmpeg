@@ -1,0 +1,5 @@
+# Sources the build fetches, kept between runs so a rebuild does not ask
+# thirty-five third-party hosts for the same files again. Populated by
+# docker-build.sh through the mount set up in `build`, and restored from
+# actions/cache in CI. Nothing here belongs in the repository.
+/.sources/
