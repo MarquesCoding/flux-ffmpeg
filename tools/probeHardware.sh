@@ -188,4 +188,120 @@ else
   printf '  could not build a sample to decode, so the chain was not tested\n'
 fi
 
+# Runs one filter chain and reports whether ffmpeg accepted it.
+#
+# Every chain below is copied from what apps/transcoder/src/transcode_plan.rs
+# emits for VAAPI, and has to be kept in step with it by hand. A probe that
+# passes while differing from what the service sends is worse than no probe,
+# which is the same reasoning PROBE_SIZE carries.
+probe_chain() {
+  local label="$1"
+  shift
+
+  local complaint status=0
+  complaint="$("$FFMPEG" -hide_banner -loglevel error "$@" 2>&1 >/dev/null)" || status=$?
+
+  if [ "$status" -eq 0 ]; then
+    printf '  %-34s WORKS\n' "$label"
+    return 0
+  fi
+
+  printf '  %-34s FAILS — %s\n' "$label" "$(last_line "$complaint")"
+}
+
+# A build either has a filter or it does not, and Flux probes for exactly these
+# before choosing a route. Reporting them separately means a missing filter
+# reads as "not compiled in" rather than as a broken chain further down.
+heading 'the filters each route needs'
+LISTED_FILTERS="$("$FFMPEG" -hide_banner -filters 2>/dev/null | awk '{print $2}')"
+
+for filter in scale_vaapi overlay_vaapi tonemap_vaapi; do
+  if printf '%s\n' "$LISTED_FILTERS" | grep -qx "$filter"; then
+    printf '  %-16s present\n' "$filter"
+  else
+    printf '  %-16s MISSING — Flux falls back for anything needing it\n' "$filter"
+  fi
+done
+
+# Burning subtitles in no longer brings the video down: the subtitle is built as
+# its own small stream, uploaded, and composited on the device. Both kinds are
+# tested because they reach the compositor by different routes — a bitmap
+# subtitle is already a picture, and text is drawn onto a transparent canvas.
+heading 'burning subtitles in without bringing the video down'
+
+if [ ! -s "$SAMPLE" ]; then
+  printf '  no sample to work from, so nothing here was tested\n'
+else
+  SUBTITLES="$WORKSPACE/subs.srt"
+  printf '1\n00:00:00,000 --> 00:00:10,000\nFlux burns this in on the device\n' >"$SUBTITLES"
+
+  TEXT_SAMPLE="$WORKSPACE/text.mkv"
+
+  if "$FFMPEG" -hide_banner -loglevel error -y -i "$SAMPLE" -i "$SUBTITLES" \
+    -c:v copy -c:s srt "$TEXT_SAMPLE" 2>/dev/null; then
+    probe_chain 'text, composited on the device' \
+      -init_hw_device "vaapi=va:$DEVICE" -filter_hw_device va \
+      -hwaccel vaapi -hwaccel_output_format vaapi \
+      -i "$TEXT_SAMPLE" -frames:v 25 \
+      -filter_complex "[0:v]scale_vaapi=w=640:h=360[base];alphasrc=s=640x360:r=25,format=bgra,subtitles='$TEXT_SAMPLE':si=0:alpha=1:sub2video=1,hwupload=derive_device=vaapi[sub];[base][sub]overlay_vaapi=eof_action=pass:repeatlast=0[v]" \
+      -map '[v]' -c:v h264_vaapi -f null -
+  else
+    printf '  could not mux text subtitles, so that chain was not tested\n'
+  fi
+
+  # An image stands in for the subtitle stream, because ffmpeg will not make one:
+  # it refuses to encode text to a bitmap format at all, so there is no way to
+  # synthesise a PGS or dvdsub track without a disc rip to hand.
+  #
+  # What this still proves is the whole hardware path — the pad and crop, the
+  # conversion, the upload and overlay_vaapi itself. What it does not cover is
+  # ffmpeg turning a real subtitle stream into frames, which is ordinary
+  # subtitle decoding rather than anything the pipeline work changed.
+  OVERLAY_IMAGE="$WORKSPACE/overlay.png"
+
+  if "$FFMPEG" -hide_banner -loglevel error -y \
+    -f lavfi -i 'color=c=white@0.5:s=720x576' -frames:v 1 "$OVERLAY_IMAGE" 2>/dev/null; then
+    probe_chain 'bitmap, composited on the device' \
+      -init_hw_device "vaapi=va:$DEVICE" -filter_hw_device va \
+      -hwaccel vaapi -hwaccel_output_format vaapi \
+      -i "$SAMPLE" -i "$OVERLAY_IMAGE" -frames:v 25 \
+      -filter_complex '[0:v]scale_vaapi=w=640:h=360[base];[1:v]scale,scale=-1:360:fast_bilinear,crop,pad=max(640\,iw):max(360\,ih):(ow-iw)/2:(oh-ih)/2:black@0,crop=640:360,format=bgra,hwupload=derive_device=vaapi[sub];[base][sub]overlay_vaapi=eof_action=pass:repeatlast=0[v]' \
+      -map '[v]' -c:v h264_vaapi -f null -
+  else
+    printf '  could not build an overlay, so that chain was not tested\n'
+  fi
+fi
+
+# Converting HDR used to send the whole session into software, because the
+# conversion has to precede the scale and a round trip around it would drag the
+# scale down too. tonemap_vaapi does it where the frames already are.
+heading 'converting HDR without bringing the video down'
+HDR_SAMPLE="$WORKSPACE/hdr.mkv"
+
+if "$FFMPEG" -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc2=size=1280x720:rate=25 -frames:v 50 \
+  -pix_fmt yuv420p10le -c:v libx265 -preset ultrafast \
+  -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc \
+  "$HDR_SAMPLE" 2>/dev/null; then
+  probe_chain 'tone map then scale, on the device' \
+    -init_hw_device "vaapi=va:$DEVICE" -filter_hw_device va \
+    -hwaccel vaapi -hwaccel_output_format vaapi \
+    -i "$HDR_SAMPLE" -frames:v 25 \
+    -vf 'tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709,scale_vaapi=w=640:h=360' \
+    -c:v h264_vaapi -f null -
+
+  # The combination is worth its own probe: it is the chain an HDR film with
+  # forced subtitles produces, and the one with the most to go wrong.
+  if [ -s "${OVERLAY_IMAGE:-}" ]; then
+    probe_chain 'tone map and composite together' \
+      -init_hw_device "vaapi=va:$DEVICE" -filter_hw_device va \
+      -hwaccel vaapi -hwaccel_output_format vaapi \
+      -i "$HDR_SAMPLE" -i "$OVERLAY_IMAGE" -frames:v 25 \
+      -filter_complex '[0:v]tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709,scale_vaapi=w=640:h=360[base];[1:v]scale,scale=-1:360:fast_bilinear,crop,pad=max(640\,iw):max(360\,ih):(ow-iw)/2:(oh-ih)/2:black@0,crop=640:360,format=bgra,hwupload=derive_device=vaapi[sub];[base][sub]overlay_vaapi=eof_action=pass:repeatlast=0[v]' \
+      -map '[v]' -c:v h264_vaapi -f null -
+  fi
+else
+  printf '  could not build an HDR sample, so tone mapping was not tested\n'
+fi
+
 heading 'done'
