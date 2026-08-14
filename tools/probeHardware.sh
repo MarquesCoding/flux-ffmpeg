@@ -43,8 +43,28 @@ require_executable() {
 
 # The last non-empty line of a complaint, which is usually the useful one.
 # Mirrors summarise_failure in apps/transcoder/src/capability.rs.
+#
+# Except when ffmpeg signs off with its muxer summary. "Nothing was written into
+# output file" is what it says whenever anything upstream produced no frames, so
+# it is the last line of every failure here and tells you nothing about which.
+# An RX 580 reported it for a missing AV1 encoder and for a tone mapper its
+# driver cannot do, which read identically and were not remotely the same fault.
+# The real complaint is the line before it.
+#
+# When that summary is the only thing ffmpeg said, it goes back in: an unhelpful
+# line beats a blank one, and "it produced no frames and would not say why" is
+# itself worth reading.
 last_line() {
-  printf '%s\n' "$1" | grep -v '^[[:space:]]*$' | tail -n 1 || true
+  local lines useful
+  lines="$(printf '%s\n' "$1" | grep -v '^[[:space:]]*$' || true)"
+  useful="$(printf '%s\n' "$lines" | grep -v 'Nothing was written into output file' | tail -n 1 || true)"
+
+  if [ -n "$useful" ]; then
+    printf '%s\n' "$useful"
+    return 0
+  fi
+
+  printf '%s\n' "$lines" | tail -n 1 || true
 }
 
 # Reproduces probe_arguments from apps/transcoder/src/capability.rs.
