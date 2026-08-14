@@ -336,6 +336,23 @@ fi
 heading 'what Flux will conclude about tone mapping'
 
 if printf '%s\n' "$LISTED_FILTERS" | grep -qx tonemap_vaapi; then
+  # Which half failed. The probe uploads a ten-bit frame and then tone maps it,
+  # and a driver can refuse either — Polaris takes P010 for HEVC Main10 decode,
+  # which says nothing about whether it will accept one uploaded. Reporting
+  # only the pair leaves the reader unable to tell "this card cannot tone map"
+  # from "this probe asks for the wrong thing", and those want opposite fixes.
+  upload_status=0
+  "$FFMPEG" -hide_banner -loglevel error \
+    -init_hw_device "vaapi=va:$DEVICE" -filter_hw_device va \
+    -f lavfi -i "testsrc2=size=${PROBE_SIZE}:rate=1" -frames:v 1 \
+    -vf 'format=p010,hwupload' -f null - >/dev/null 2>&1 || upload_status=$?
+
+  if [ "$upload_status" -eq 0 ]; then
+    printf '  ten-bit frames upload to the device\n'
+  else
+    printf '  ten-bit frames will NOT upload to this device\n'
+  fi
+
   tonemap_status=0
   tonemap_complaint="$("$FFMPEG" -hide_banner -loglevel error \
     -init_hw_device "vaapi=va:$DEVICE" -filter_hw_device va \
