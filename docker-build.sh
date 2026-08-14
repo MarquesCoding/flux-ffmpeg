@@ -54,6 +54,29 @@ cache_ready() {
     [[ -d "${SOURCE_CACHE}" ]]
 }
 
+# git refuses to work in a repository somebody else owns, and a restored cache
+# is exactly that.
+#
+# The cache is chowned to the runner's own uid so actions/cache can read it, and
+# comes back the same way. The build runs as root, so every cached clone arrives
+# owned by 1001 and git declines to touch it:
+#
+#   fatal: detected dubious ownership in repository at '/ffmpeg/freetype'
+#
+# Root can still read and write those files; only git's own check objects. That
+# is what made this quiet rather than obvious -- freetype's autogen.sh could not
+# check out its `dlg` submodule, carried on regardless, and died two lines later
+# copying files that were never fetched.
+#
+# It also passed once and failed every time after. The run that introduced the
+# cache had nothing to restore and cloned fresh as root; the second run was the
+# first to restore anything. A cache is only proved by the build after the one
+# that fills it.
+#
+# This container builds one package and is then thrown away, so there is nothing
+# here worth protecting from a repository it does not own.
+git config --global --add safe.directory '*'
+
 # A filesystem-safe name for a source, including its ref, so that moving a pin
 # misses the cache rather than quietly reusing the tree from the old one.
 cache_key() {
