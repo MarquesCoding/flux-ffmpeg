@@ -214,19 +214,44 @@ fi
 # emits for VAAPI, and has to be kept in step with it by hand. A probe that
 # passes while differing from what the service sends is worse than no probe,
 # which is the same reasoning PROBE_SIZE carries.
+#
+# Run more than once, because one of these is not deterministic. The text
+# subtitle chain passed twice and then aborted inside the VAAPI encoder on an
+# RX 580 — `Assertion !avpkt->data && !avpkt->buf failed at encode.c:112` —
+# with nothing changed between the runs. A single pass cannot tell "this works"
+# from "this works two times in three", and the difference decides whether the
+# route is shippable.
+CHAIN_ATTEMPTS="${FLUX_CHAIN_ATTEMPTS:-5}"
+
 probe_chain() {
   local label="$1"
   shift
 
-  local complaint status=0
-  complaint="$("$FFMPEG" -hide_banner -loglevel error "$@" 2>&1 >/dev/null)" || status=$?
+  local passes=0 complaint='' status attempt
+  for attempt in $(seq 1 "$CHAIN_ATTEMPTS"); do
+    status=0
+    local output
+    output="$("$FFMPEG" -hide_banner -loglevel error "$@" 2>&1 >/dev/null)" || status=$?
 
-  if [ "$status" -eq 0 ]; then
-    printf '  %-34s WORKS\n' "$label"
+    if [ "$status" -eq 0 ]; then
+      passes=$((passes + 1))
+    elif [ -z "$complaint" ]; then
+      complaint="$output"
+    fi
+  done
+
+  if [ "$passes" -eq "$CHAIN_ATTEMPTS" ]; then
+    printf '  %-34s WORKS  %d/%d\n' "$label" "$passes" "$CHAIN_ATTEMPTS"
     return 0
   fi
 
-  printf '  %-34s FAILS — %s\n' "$label" "$(last_line "$complaint")"
+  if [ "$passes" -gt 0 ]; then
+    printf '  %-34s FLAKY  %d/%d — %s\n' \
+      "$label" "$passes" "$CHAIN_ATTEMPTS" "$(last_line "$complaint")"
+    return 0
+  fi
+
+  printf '  %-34s FAILS  0/%d — %s\n' "$label" "$CHAIN_ATTEMPTS" "$(last_line "$complaint")"
 }
 
 # A build either has a filter or it does not, and Flux probes for exactly these
