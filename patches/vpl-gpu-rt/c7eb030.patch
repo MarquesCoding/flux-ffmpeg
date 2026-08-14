@@ -1,0 +1,38 @@
+From c7eb03051cf09c940f9d92fb8858adafc5526e5b Mon Sep 17 00:00:00 2001
+From: nyanmisaka <nst799610810@gmail.com>
+Date: Mon, 24 Mar 2025 18:25:04 +0800
+Subject: [PATCH] [VP] Fix missing entries in PicStruct validation
+
+Signed-off-by: nyanmisaka <nst799610810@gmail.com>
+---
+ _studio/mfx_lib/vpp/src/mfx_vpp_sw_core.cpp | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/_studio/mfx_lib/vpp/src/mfx_vpp_sw_core.cpp b/_studio/mfx_lib/vpp/src/mfx_vpp_sw_core.cpp
+index b0815fa572..77293bbe0f 100644
+--- a/_studio/mfx_lib/vpp/src/mfx_vpp_sw_core.cpp
++++ b/_studio/mfx_lib/vpp/src/mfx_vpp_sw_core.cpp
+@@ -1026,11 +1026,21 @@ mfxStatus VideoVPPBase::Query(VideoCORE * core, mfxVideoParam *in, mfxVideoParam
+ 
+         // Check for invalid cases
+         if (out->vpp.In.PicStruct != MFX_PICSTRUCT_PROGRESSIVE &&
+-            out->vpp.In.PicStruct != MFX_PICSTRUCT_FIELD_TFF   &&
+-            out->vpp.In.PicStruct != MFX_PICSTRUCT_FIELD_BFF   &&
++            out->vpp.In.PicStruct != (MFX_PICSTRUCT_PROGRESSIVE | MFX_PICSTRUCT_FRAME_DOUBLING) &&
++            out->vpp.In.PicStruct != (MFX_PICSTRUCT_PROGRESSIVE | MFX_PICSTRUCT_FRAME_TRIPLING) &&
++            out->vpp.In.PicStruct != (MFX_PICSTRUCT_PROGRESSIVE | MFX_PICSTRUCT_FIELD_BFF) &&
++            out->vpp.In.PicStruct != (MFX_PICSTRUCT_PROGRESSIVE | MFX_PICSTRUCT_FIELD_TFF) &&
++            out->vpp.In.PicStruct != (MFX_PICSTRUCT_PROGRESSIVE | MFX_PICSTRUCT_FIELD_BFF | MFX_PICSTRUCT_FIELD_REPEATED) &&
++            out->vpp.In.PicStruct != (MFX_PICSTRUCT_PROGRESSIVE | MFX_PICSTRUCT_FIELD_TFF | MFX_PICSTRUCT_FIELD_REPEATED) &&
++            out->vpp.In.PicStruct != MFX_PICSTRUCT_FIELD_BFF &&
++            out->vpp.In.PicStruct != MFX_PICSTRUCT_FIELD_TFF &&
+             out->vpp.In.PicStruct != MFX_PICSTRUCT_FIELD_SINGLE &&
+             out->vpp.In.PicStruct != MFX_PICSTRUCT_FIELD_TOP && // Field pass-through
++            out->vpp.In.PicStruct != (MFX_PICSTRUCT_FIELD_TOP | MFX_PICSTRUCT_FIELD_PAIRED_NEXT) &&
++            out->vpp.In.PicStruct != (MFX_PICSTRUCT_FIELD_TOP | MFX_PICSTRUCT_FIELD_PAIRED_PREV) &&
+             out->vpp.In.PicStruct != MFX_PICSTRUCT_FIELD_BOTTOM &&
++            out->vpp.In.PicStruct != (MFX_PICSTRUCT_FIELD_BOTTOM | MFX_PICSTRUCT_FIELD_PAIRED_NEXT) &&
++            out->vpp.In.PicStruct != (MFX_PICSTRUCT_FIELD_BOTTOM | MFX_PICSTRUCT_FIELD_PAIRED_PREV) &&
+             out->vpp.In.PicStruct != MFX_PICSTRUCT_UNKNOWN)
+         {
+ 

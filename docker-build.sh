@@ -59,31 +59,32 @@ fetch() {
         "${url}"
 }
 
-# Applies a patch fetched from a URL, using whatever tool is named after it.
+# Applies a patch shipped in this repository, using whatever tool is named
+# after it.
 #
-# Downloaded to a file and checked before use rather than piped straight in. An
-# empty download is a download failure and should say so, not become a confusing
-# complaint from the tool that was handed nothing.
+# These were fetched from github.com and gitlab.freedesktop.org mid-build until
+# two consecutive builds died on two different downloads, forty minutes and two
+# hours in. Retries were added and did not settle it: the AMF tarball had
+# already failed after three attempts, because being rate limited is not a blip
+# to wait out. A file already in the repository cannot fail to download.
 #
-#   apply_remote_patch URL git apply
-#   apply_remote_patch URL patch -p1 -d some-directory
-#   apply_remote_patch URL sh -c "sed 's#a#b#' | patch -p1 -d some-directory"
-apply_remote_patch() {
-    local url="$1"
+# Vendoring also pins what the Mesa patches contain. Those were fetched by merge
+# request number, and a merge request is not immutable -- the build could have
+# changed under us with no commit to point at.
+#
+# See patches/README.md for provenance and how to refresh one.
+#
+#   apply_local_patch theora/3ae2669.patch git apply
+#   apply_local_patch mesa/41090.patch patch -p1 -d some-directory
+#   apply_local_patch mesa/42408.patch sh -c "sed 's#a#b#' | patch -p1 -d dir"
+apply_local_patch() {
+    local name="$1"
     shift
 
-    local patch_file
-    patch_file="$(mktemp)"
-
-    if ! fetch "${url}" "${patch_file}"; then
-        echo "apply_remote_patch: could not download ${url}" >&2
-        rm -f "${patch_file}"
-        return 1
-    fi
+    local patch_file="${SOURCE_DIR}/patches/${name}"
 
     if [[ ! -s "${patch_file}" ]]; then
-        echo "apply_remote_patch: ${url} downloaded empty" >&2
-        rm -f "${patch_file}"
+        echo "apply_local_patch: ${patch_file} is missing or empty" >&2
         return 1
     fi
 
@@ -91,10 +92,8 @@ apply_remote_patch() {
 
     "$@" < "${patch_file}" || outcome=$?
 
-    rm -f "${patch_file}"
-
     if [[ ${outcome} -ne 0 ]]; then
-        echo "apply_remote_patch: ${url} would not apply" >&2
+        echo "apply_local_patch: ${name} would not apply" >&2
     fi
 
     return ${outcome}
@@ -289,7 +288,7 @@ prepare_extra_common() {
     git clone -b v1.2.0 --depth=1 https://github.com/xiph/theora.git
     pushd theora
     # autotools: relax autoconf requirement to 2.69
-    apply_remote_patch https://github.com/xiph/theora/commit/3ae2669.patch git apply
+    apply_local_patch theora/3ae2669.patch git apply
     ./autogen.sh
     ./configure \
         ${CROSS_OPT} \
@@ -583,21 +582,13 @@ prepare_extra_common() {
         fetch ${mesa_link} mesa.tar.gz
         tar xaf mesa.tar.gz
         # Enable VAAPI VPP alpha blending support
-        apply_remote_patch \
-            https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/41090.patch \
-            patch -p1 -d mesa-${mesa_ver}
+        apply_local_patch mesa/41090.patch patch -p1 -d mesa-${mesa_ver}
         # Fix misc CSC issues in VAAPI VPP
-        apply_remote_patch \
-            https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42181.patch \
-            patch -p1 -d mesa-${mesa_ver}
+        apply_local_patch mesa/42181.patch patch -p1 -d mesa-${mesa_ver}
         # Fix setting VPE rotation with horizontal flip enabled
-        apply_remote_patch \
-            https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42408.patch \
-            sh -c "sed 's#/mm/#/#g' | patch -p1 -d mesa-${mesa_ver}"
+        apply_local_patch mesa/42408.patch sh -c "sed 's#/mm/#/#g' | patch -p1 -d mesa-${mesa_ver}"
         # Fix setting chroma swizzle mode in VK Video on GFX9
-        apply_remote_patch \
-            https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42763.patch \
-            patch -p1 -d mesa-${mesa_ver}
+        apply_local_patch mesa/42763.patch patch -p1 -d mesa-${mesa_ver}
         meson setup mesa-${mesa_ver} mesa_build \
             ${MESON_CROSS_OPT} \
             --prefix=${TARGET_DIR} \
@@ -720,11 +711,11 @@ prepare_extra_amd64() {
     git clone -b intel-mediasdk-23.2.2 --depth=1 https://github.com/Intel-Media-SDK/MediaSDK.git
     pushd MediaSDK
     # Fix build in gcc 13
-    apply_remote_patch https://github.com/Intel-Media-SDK/MediaSDK/commit/8fb9f5f.patch git apply
+    apply_local_patch mediasdk/8fb9f5f.patch git apply
     # Fix ADI issue with VPL patch
-    apply_remote_patch https://github.com/intel/vpl-gpu-rt/commit/e025c82.patch git apply
+    apply_local_patch vpl-gpu-rt/e025c82.patch git apply
     # Fix missing entries in PicStruct validation with VPL patch
-    apply_remote_patch https://github.com/intel/vpl-gpu-rt/commit/c7eb030.patch git apply
+    apply_local_patch vpl-gpu-rt/c7eb030.patch git apply
     sed -i 's|MFX_PLUGINS_CONF_DIR "/plugins.cfg"|"/usr/lib/flux-ffmpeg/lib/mfx/plugins.cfg"|g' api/mfx_dispatch/linux/mfxloader.cpp
     mkdir build && pushd build
     cmake -DCMAKE_INSTALL_PREFIX=${TARGET_DIR} \
@@ -768,7 +759,7 @@ prepare_extra_amd64() {
     git clone -b intel-onevpl-26.2.4 --depth=1 https://github.com/intel/vpl-gpu-rt.git
     pushd vpl-gpu-rt
     # Fix missing entries in PicStruct validation
-    apply_remote_patch https://github.com/intel/vpl-gpu-rt/commit/c7eb030.patch git apply
+    apply_local_patch vpl-gpu-rt/c7eb030.patch git apply
     mkdir build && pushd build
     cmake -DCMAKE_INSTALL_PREFIX=${TARGET_DIR} \
           -DCMAKE_INSTALL_LIBDIR=${TARGET_DIR}/lib \
@@ -790,9 +781,9 @@ prepare_extra_amd64() {
     git clone -b intel-media-26.2.4 --depth=1 https://github.com/intel/media-driver.git
     pushd media-driver
     # Enable VC1 decode on DG2 (note that MTL+ is not supported)
-    apply_remote_patch https://github.com/intel/media-driver/commit/e47702f.patch git apply
+    apply_local_patch media-driver/e47702f.patch git apply
     # Fix iHD crashes when used with Xe KMD on small BAR systems
-    apply_remote_patch https://github.com/intel/media-driver/commit/6fd4037.patch git apply
+    apply_local_patch media-driver/6fd4037.patch git apply
     mkdir build && pushd build
     cmake -DCMAKE_INSTALL_PREFIX=${TARGET_DIR} \
           -DCMAKE_C_FLAGS="${CFLAGS} -Wno-error=array-bounds" \

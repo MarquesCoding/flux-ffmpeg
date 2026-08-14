@@ -1,0 +1,42 @@
+From 7fc5bd8947557c6bedc158b850dc7dffa0a4ac38 Mon Sep 17 00:00:00 2001
+From: Benjamin Cheng <benjamin.cheng@amd.com>
+Date: Tue, 7 Jul 2026 14:46:07 -0400
+Subject: [PATCH] ac/surface: Remove GFX10 limitation for FORCE_SWIZZLE_MODE
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This was historically added by c4cdef6, but now FORCE_SWIZZLE_MODE is
+only used for multi-planar video images in RADV, so it's safe to remove
+this limit.
+
+It caused issues with decode on chips with GFX9 because the swizzle
+modes could be different between the luma/chroma planes.
+
+Cc: mesa-stable
+Closes: https://gitlab.freedesktop.org/mesa/mesa/-/work_items/15815
+Signed-off-by: Benjamin Cheng <benjamin.cheng@amd.com>
+Reviewed-by: Samuel Pitoiset <samuel.pitoiset@gmail.com>
+Reviewed-by: Marek Olšák <maraeo@gmail.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42763>
+---
+ src/amd/common/ac_surface.c | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/src/amd/common/ac_surface.c b/src/amd/common/ac_surface.c
+index 51100cf9ace8..a0b2fae1fa1f 100644
+--- a/src/amd/common/ac_surface.c
++++ b/src/amd/common/ac_surface.c
+@@ -2829,8 +2829,7 @@ static int gfx9_compute_surface(struct ac_addrlib *addrlib, const struct radeon_
+ 
+       case RADEON_SURF_MODE_1D:
+       case RADEON_SURF_MODE_2D:
+-         if (surf->flags & RADEON_SURF_IMPORTED ||
+-             (info->gfx_level >= GFX10 && surf->flags & RADEON_SURF_FORCE_SWIZZLE_MODE)) {
++         if (surf->flags & (RADEON_SURF_IMPORTED | RADEON_SURF_FORCE_SWIZZLE_MODE)) {
+             AddrSurfInfoIn.swizzleMode = surf->u.gfx9.swizzle_mode;
+             break;
+          }
+-- 
+GitLab
+

@@ -1,0 +1,187 @@
+From f13f43904960082919d73b83a604a65ef3cabc16 Mon Sep 17 00:00:00 2001
+From: David Rosca <david.rosca@amd.com>
+Date: Thu, 11 Jun 2026 10:42:18 +0200
+Subject: [PATCH 1/3] vl: Skip transfer function and primaries conversion when
+ not needed
+
+cs_trc_apply clamps the value to 0 which causes issues in YUV->YUV conversions
+that can have negative intermediate values after conversion to RGB.
+If no transfer function and primaries conversion is needed, this step
+can be skipped.
+
+Fixes: 69717c257f8 ("vl,frontends/va: Implement gamma and primaries conversion")
+Reviewed-by: Benjamin Cheng <benjamin.cheng@amd.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42181>
+---
+ src/gallium/auxiliary/vl/vl_compositor.c    |  2 +-
+ src/gallium/auxiliary/vl/vl_compositor_cs.c | 30 ++++++++++++++++-----
+ 2 files changed, 25 insertions(+), 7 deletions(-)
+
+diff --git a/src/gallium/auxiliary/vl/vl_compositor.c b/src/gallium/auxiliary/vl/vl_compositor.c
+index e09b270e4c86..efce66668efb 100644
+--- a/src/gallium/auxiliary/vl/vl_compositor.c
++++ b/src/gallium/auxiliary/vl/vl_compositor.c
+@@ -872,7 +872,7 @@ vl_compositor_init_state(struct vl_compositor_state *s, struct pipe_context *pip
+       pipe->screen,
+       PIPE_BIND_CONSTANT_BUFFER,
+       PIPE_USAGE_DEFAULT,
+-      sizeof(vl_csc_matrix) * 3 + 29 * sizeof(float) + 5 * sizeof(int)
++      sizeof(vl_csc_matrix) * 3 + 29 * sizeof(float) + 7 * sizeof(int)
+    );
+ 
+    if (!s->shader_params)
+diff --git a/src/gallium/auxiliary/vl/vl_compositor_cs.c b/src/gallium/auxiliary/vl/vl_compositor_cs.c
+index 94e99a27ca16..ca29cdb9a952 100644
+--- a/src/gallium/auxiliary/vl/vl_compositor_cs.c
++++ b/src/gallium/auxiliary/vl/vl_compositor_cs.c
+@@ -49,6 +49,7 @@ struct cs_viewport {
+    int blend_enabled;
+    int blend_mode;
+    float blend_alpha;
++   int skip_prim_trc;
+ };
+ 
+ struct cs_shader {
+@@ -102,6 +103,7 @@ static nir_def *cs_create_shader(struct vl_compositor *c, struct cs_shader *s)
+          int blend_enabled;    // params[17].x
+          int blend_mode;       // params[17].y
+          float blend_alpha;    // params[17].z
++         int skip_prim_trc;    // params[17].w
+       };
+ 
+       void main()
+@@ -401,14 +403,19 @@ static nir_def *cs_trc_apply(struct cs_shader *s, nir_def *src, bool in,
+ 
+ static nir_def *cs_prim_trc_conversion(struct cs_shader *s, nir_def *src)
+ {
+-   nir_def *col[3];
+-   nir_def *color = cs_trc_apply(s, src, true, cs_trc_to_linear);
++   nir_push_if(&s->b, nir_ieq_imm(&s->b, nir_channel(&s->b, s->params[17], 3), 0));
++      nir_def *col[3];
++      nir_def *color = cs_trc_apply(s, src, true, cs_trc_to_linear);
+ 
+-   for (unsigned i = 0; i < 3; i++)
+-      col[i] = cs_color_conversion(s, color, i, PRIMARIES);
++      for (unsigned i = 0; i < 3; i++)
++         col[i] = cs_color_conversion(s, color, i, PRIMARIES);
+ 
+-   color = nir_vec4(&s->b, col[0], col[1], col[2], s->fone);
+-   return cs_trc_apply(s, color, false, cs_trc_from_linear);
++      color = nir_vec4(&s->b, col[0], col[1], col[2], s->fone);
++      color = cs_trc_apply(s, color, false, cs_trc_from_linear);
++   nir_push_else(&s->b, NULL);
++   nir_pop_if(&s->b, NULL);
++
++   return nir_if_phi(&s->b, color, src);
+ }
+ 
+ static inline nir_def *cs_fetch_texel(struct cs_shader *s, nir_def *coords, unsigned sampler)
+@@ -1004,6 +1011,13 @@ chroma_offset_y(unsigned location)
+       return 0.0f;
+ }
+ 
++static bool is_identity(vl_csc_matrix m)
++{
++   return m[0][0] == 1.0 && m[1][1] == 1.0 && m[2][2] == 1.0 &&
++          !m[0][1] && !m[0][2] && !m[0][3] && !m[1][0] && !m[1][2] &&
++          !m[1][3] && !m[2][0] && !m[2][1] && !m[2][3];
++}
++
+ static bool
+ set_viewport(struct vl_compositor_state *s,
+              struct cs_viewport         *drawn,
+@@ -1076,6 +1090,8 @@ set_viewport(struct vl_compositor_state *s,
+    *ptr_int++ = drawn->blend_mode;
+    ptr_float = (float *)ptr_int;
+    *ptr_float++ = drawn->blend_alpha;
++   ptr_int = (int *)ptr_float;
++   *ptr_int++ = drawn->skip_prim_trc;
+ 
+    pipe_buffer_unmap(s->pipe, buf_transfer);
+ 
+@@ -1116,6 +1132,8 @@ draw_layers(struct vl_compositor       *c,
+             drawn.blend_alpha = layer->blend_alpha;
+          else
+             drawn.blend_alpha = 1.0f;
++         drawn.skip_prim_trc = is_identity(s->primaries) &&
++            s->in_transfer_characteristic == s->out_transfer_characteristic;
+          calc_proj(layer, samplers[0]->texture, drawn.proj);
+          calc_proj(layer, sampler1->texture, drawn.chroma_proj);
+          set_viewport(s, &drawn, samplers);
+-- 
+GitLab
+
+
+From 5d6e5a895fc71a9508143fd2d20850be1ef3cbd0 Mon Sep 17 00:00:00 2001
+From: David Rosca <david.rosca@amd.com>
+Date: Thu, 11 Jun 2026 11:43:25 +0200
+Subject: [PATCH 2/3] va: Always reset compositor chroma location
+
+Otherwise it would incorrectly use it for RGB formats if there
+was a previous conversion with YUV formats.
+
+Fixes: d0eec628310 ("frontends/va: Change vlVaPostProcCompositor to take pipe_vpp_desc arg")
+Reviewed-by: Benjamin Cheng <benjamin.cheng@amd.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42181>
+---
+ src/gallium/frontends/va/postproc.c | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/src/gallium/frontends/va/postproc.c b/src/gallium/frontends/va/postproc.c
+index 1f906daa5d6c..fb553fb6e389 100644
+--- a/src/gallium/frontends/va/postproc.c
++++ b/src/gallium/frontends/va/postproc.c
+@@ -336,6 +336,7 @@ vlVaPostProcCompositor(vlVaDriver *drv,
+    vl_csc_get_primaries_matrix(param->in_color_primaries, param->out_color_primaries,
+                                &drv->cstate.primaries);
+ 
++   drv->cstate.chroma_location = VL_COMPOSITOR_LOCATION_NONE;
+    drv->cstate.in_transfer_characteristic = param->in_transfer_characteristics;
+    drv->cstate.out_transfer_characteristic = param->out_transfer_characteristics;
+ 
+@@ -344,8 +345,6 @@ vlVaPostProcCompositor(vlVaDriver *drv,
+       enum pipe_video_vpp_chroma_siting chroma_siting =
+          src_yuv ? param->in_chroma_siting : param->out_chroma_siting;
+ 
+-      drv->cstate.chroma_location = VL_COMPOSITOR_LOCATION_NONE;
+-
+       if (util_format_get_plane_height(format, 1, 4) != 4) {
+          if (chroma_siting & PIPE_VIDEO_VPP_CHROMA_SITING_VERTICAL_TOP)
+             drv->cstate.chroma_location |= VL_COMPOSITOR_LOCATION_VERTICAL_TOP;
+-- 
+GitLab
+
+
+From 88baf64496d20e8c2a4994b0278b882c89e52ca8 Mon Sep 17 00:00:00 2001
+From: David Rosca <david.rosca@amd.com>
+Date: Thu, 11 Jun 2026 13:49:44 +0200
+Subject: [PATCH 3/3] va: Use RGB format with matching bit depth for YUV->YUV
+ matrices
+
+The bit depth used for the matrix calculation is derived from input
+format.
+
+Fixes: 5bc0df5aada ("vl,frontends/va: Implement YUV->YUV matrix coeff conversion")
+Reviewed-by: Benjamin Cheng <benjamin.cheng@amd.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42181>
+---
+ src/gallium/frontends/va/postproc.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/frontends/va/postproc.c b/src/gallium/frontends/va/postproc.c
+index fb553fb6e389..58c72b570e48 100644
+--- a/src/gallium/frontends/va/postproc.c
++++ b/src/gallium/frontends/va/postproc.c
+@@ -315,7 +315,8 @@ vlVaPostProcCompositor(vlVaDriver *drv,
+                                   param->in_color_range, param->out_color_range, &drv->cstate.yuv2rgb);
+       } else {
+          /* YUV to YUV (convert to RGB for transfer function and primaries) */
+-         enum pipe_format rgb_format = PIPE_FORMAT_B8G8R8A8_UNORM;
++         enum pipe_format rgb_format = util_format_get_plane_format(src->buffer_format, 0);
++         assert(!util_format_is_yuv(rgb_format));
+          vl_csc_get_rgbyuv_matrix(param->in_matrix_coefficients, src->buffer_format, rgb_format,
+                                   param->in_color_range, PIPE_VIDEO_VPP_CHROMA_COLOR_RANGE_FULL,
+                                   &drv->cstate.yuv2rgb);
+-- 
+GitLab
+
