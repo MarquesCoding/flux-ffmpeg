@@ -38,6 +38,28 @@ UBUNTU_PORTS_ADDR=http://ports.ubuntu.com/ubuntu-ports/
 FETCH_TRIES=8
 FETCH_WAIT=20
 
+# Where fetched sources are kept between builds.
+#
+# The container gets this as a bind mount, so a source fetched by one build is
+# still on disk for the next. Retries were never the whole answer: the matrix
+# runs four jobs at once and each was fetching all thirty-five dependencies
+# from scratch, twenty-seven of them from github.com. That burst is what gets
+# an unauthenticated runner throttled, and no amount of patience fixes it.
+#
+# Nothing depends on the directory existing. A build with no mount fetches from
+# the network exactly as before.
+SOURCE_CACHE="${SOURCE_CACHE:-/sources}"
+
+cache_ready() {
+    [[ -d "${SOURCE_CACHE}" ]]
+}
+
+# A filesystem-safe name for a source, including its ref, so that moving a pin
+# misses the cache rather than quietly reusing the tree from the old one.
+cache_key() {
+    printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
+}
+
 # Downloads a URL to a file, retrying, and says so when it cannot.
 #
 # `--retry-on-http-error` is the important part: wget does not treat a 503 as
@@ -46,6 +68,13 @@ FETCH_WAIT=20
 fetch() {
     local url="$1"
     local target="$2"
+    local cached="${SOURCE_CACHE}/tarballs/$(cache_key "${url}")"
+
+    if cache_ready && [[ -s "${cached}" ]]; then
+        echo "fetch: ${url} served from cache"
+        cp "${cached}" "${target}"
+        return 0
+    fi
 
     wget \
         --tries=${FETCH_TRIES} \
@@ -56,7 +85,60 @@ fetch() {
         --retry-on-http-error=408,429,500,502,503,504 \
         -nv \
         -O "${target}" \
-        "${url}"
+        "${url}" || return 1
+
+    if cache_ready; then
+        mkdir -p "${SOURCE_CACHE}/tarballs"
+        cp "${target}" "${cached}" || true
+    fi
+}
+
+# Clones a pinned ref, retrying, and reusing a cached tree when there is one.
+#
+# Until now the twenty-nine clones here had no retry whatsoever. The hardening
+# that followed the failed release builds covered the wget fetches and stopped
+# there, which was the smaller half of the problem: the clones are twenty-seven
+# of the thirty-five things this build pulls from github.com.
+#
+#   clone <ref> <url> [directory]
+#   CLONE_RECURSIVE=1 clone <ref> <url>     when submodules are wanted
+clone() {
+    local ref="$1"
+    local url="$2"
+    local target="${3:-}"
+    local destination="${target:-$(basename "${url}" .git)}"
+    local cached="${SOURCE_CACHE}/git/$(cache_key "${url}@${ref}")"
+
+    if cache_ready && [[ -d "${cached}" ]]; then
+        echo "clone: ${url}@${ref} served from cache"
+        cp -a "${cached}" "${destination}"
+        return 0
+    fi
+
+    local -a options=(-b "${ref}" --depth=1)
+    [[ -n "${CLONE_RECURSIVE:-}" ]] && options+=(--recursive)
+
+    local attempt=1
+    while true; do
+        if git clone "${options[@]}" "${url}" "${destination}"; then
+            break
+        fi
+
+        if (( attempt >= FETCH_TRIES )); then
+            echo "clone: gave up on ${url}@${ref} after ${attempt} attempts" >&2
+            return 1
+        fi
+
+        echo "clone: ${url}@${ref} failed, retrying in ${FETCH_WAIT}s (${attempt}/${FETCH_TRIES})" >&2
+        rm -rf "${destination}"
+        attempt=$(( attempt + 1 ))
+        sleep "${FETCH_WAIT}"
+    done
+
+    if cache_ready; then
+        mkdir -p "${SOURCE_CACHE}/git"
+        cp -a "${destination}" "${cached}" || true
+    fi
 }
 
 # Applies a patch shipped in this repository, using whatever tool is named
@@ -139,7 +221,7 @@ prepare_extra_common() {
 
     # ZLIB
     pushd ${SOURCE_DIR}
-    git clone -b v1.3.2 --depth=1 https://github.com/madler/zlib.git
+    clone v1.3.2 https://github.com/madler/zlib.git
     pushd zlib
     CROSS_PREFIX=${CROSS_PREFIX_OPT} ./configure \
         --prefix=${TARGET_DIR} \
@@ -152,7 +234,7 @@ prepare_extra_common() {
     # LIBXML2
     pushd ${SOURCE_DIR}
     libxml2_ver="v2.15.3"
-    git clone -b ${libxml2_ver} --depth=1 https://github.com/GNOME/libxml2.git
+    clone ${libxml2_ver} https://github.com/GNOME/libxml2.git
     pushd libxml2
     ./autogen.sh \
         ${CROSS_OPT} \
@@ -167,7 +249,7 @@ prepare_extra_common() {
 
     # FRIBIDI
     pushd ${SOURCE_DIR}
-    git clone -b v1.0.16 --depth=1 https://github.com/fribidi/fribidi.git
+    clone v1.0.16 https://github.com/fribidi/fribidi.git
     meson setup fribidi fribidi_build \
         ${MESON_CROSS_OPT} \
         --prefix=${TARGET_DIR} \
@@ -183,7 +265,7 @@ prepare_extra_common() {
 
     # FREETYPE
     pushd ${SOURCE_DIR}
-    git clone -b VER-2-14-3 --depth=1 https://github.com/freetype/freetype.git
+    clone VER-2-14-3 https://github.com/freetype/freetype.git
     pushd freetype
     ./autogen.sh
     ./configure \
@@ -198,7 +280,7 @@ prepare_extra_common() {
 
     # FONTCONFIG
     pushd ${SOURCE_DIR}
-    git clone -b 2.17.1 --depth=1 https://chromium.googlesource.com/external/fontconfig
+    clone 2.17.1 https://chromium.googlesource.com/external/fontconfig
     meson setup fontconfig fontconfig_build \
         ${MESON_CROSS_OPT} \
         --prefix=${TARGET_DIR} \
@@ -219,7 +301,7 @@ prepare_extra_common() {
 
     # HARFBUZZ
     pushd ${SOURCE_DIR}
-    git clone -b 14.2.1 --depth=1 https://github.com/harfbuzz/harfbuzz.git
+    clone 14.2.1 https://github.com/harfbuzz/harfbuzz.git
     meson setup harfbuzz harfbuzz_build \
         ${MESON_CROSS_OPT} \
         --prefix=${TARGET_DIR} \
@@ -237,7 +319,7 @@ prepare_extra_common() {
 
     # UNIBREAK
     pushd ${SOURCE_DIR}
-    git clone -b libunibreak_7_0 --depth=1 https://github.com/adah1972/libunibreak.git
+    clone libunibreak_7_0 https://github.com/adah1972/libunibreak.git
     pushd libunibreak
     ./bootstrap
     ./configure \
@@ -253,7 +335,7 @@ prepare_extra_common() {
 
     # LIBASS
     pushd ${SOURCE_DIR}
-    git clone -b 0.17.5 --depth=1 https://github.com/libass/libass.git
+    clone 0.17.5 https://github.com/libass/libass.git
     pushd libass
     ./autogen.sh
     ./configure \
@@ -269,7 +351,7 @@ prepare_extra_common() {
 
     # OGG
     pushd ${SOURCE_DIR}
-    git clone -b v1.3.6 --depth=1 https://github.com/xiph/ogg.git
+    clone v1.3.6 https://github.com/xiph/ogg.git
     pushd ogg
     ./autogen.sh
     ./configure \
@@ -285,7 +367,7 @@ prepare_extra_common() {
 
     # THEORA
     pushd ${SOURCE_DIR}
-    git clone -b v1.2.0 --depth=1 https://github.com/xiph/theora.git
+    clone v1.2.0 https://github.com/xiph/theora.git
     pushd theora
     # autotools: relax autoconf requirement to 2.69
     apply_local_patch theora/3ae2669.patch git apply
@@ -332,7 +414,7 @@ prepare_extra_common() {
 
     # CHROMAPRINT
     pushd ${SOURCE_DIR}
-    git clone -b v1.6.0 --depth=1 https://github.com/acoustid/chromaprint.git
+    clone v1.6.0 https://github.com/acoustid/chromaprint.git
     pushd chromaprint
     echo "Libs.private: -lfftw3f -lstdc++" >> libchromaprint.pc.cmake
     echo "Cflags.private: -DCHROMAPRINT_NODLL" >> libchromaprint.pc.cmake
@@ -354,7 +436,7 @@ prepare_extra_common() {
 
     # ZIMG
     pushd ${SOURCE_DIR}
-    git clone -b release-3.0.6 --recursive --depth=1 https://github.com/sekrit-twc/zimg.git
+    CLONE_RECURSIVE=1 clone release-3.0.6 https://github.com/sekrit-twc/zimg.git
     pushd zimg
     ./autogen.sh
     ./configure --prefix=${TARGET_DIR} ${CROSS_OPT}
@@ -365,7 +447,7 @@ prepare_extra_common() {
 
     # DAV1D
     pushd ${SOURCE_DIR}
-    git clone -b 1.5.3 --depth=1 https://code.videolan.org/videolan/dav1d.git
+    clone 1.5.3 https://code.videolan.org/videolan/dav1d.git
     meson setup dav1d dav1d_build \
         ${MESON_CROSS_OPT} \
         --prefix=${TARGET_DIR} \
@@ -382,7 +464,7 @@ prepare_extra_common() {
 
     # SVT-AV1
     pushd ${SOURCE_DIR}
-    git clone -b v4.1.0 --depth=1 https://gitlab.com/AOMediaCodec/SVT-AV1.git
+    clone v4.1.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git
     pushd SVT-AV1
     mkdir build
     pushd build
@@ -419,7 +501,7 @@ prepare_extra_common() {
 
     # FFNVCODEC
     pushd ${SOURCE_DIR}
-    git clone -b n12.0.16.1 --depth=1 https://github.com/FFmpeg/nv-codec-headers.git
+    clone n12.0.16.1 https://github.com/FFmpeg/nv-codec-headers.git
     pushd nv-codec-headers
     make PREFIX=${TARGET_DIR} install
     popd
@@ -455,7 +537,7 @@ prepare_extra_common() {
 
     # LIBVA
     pushd ${SOURCE_DIR}
-    git clone -b 2.24.1 --depth=1 https://github.com/intel/libva.git
+    clone 2.24.1 https://github.com/intel/libva.git
     pushd libva
     if [ "${ARCH}" = "arm64" ]; then
         libva_drv_arch_path="/usr/lib/aarch64-linux-gnu/dri"
@@ -478,7 +560,7 @@ prepare_extra_common() {
 
     # LIBVA-UTILS
     pushd ${SOURCE_DIR}
-    git clone -b 2.24.0 --depth=1 https://github.com/intel/libva-utils.git
+    clone 2.24.0 https://github.com/intel/libva-utils.git
     pushd libva-utils
     ./autogen.sh
     ./configure \
@@ -491,7 +573,7 @@ prepare_extra_common() {
 
     # Vulkan Headers
     pushd ${SOURCE_DIR}
-    git clone -b v1.4.355 --depth=1 https://github.com/KhronosGroup/Vulkan-Headers.git
+    clone v1.4.355 https://github.com/KhronosGroup/Vulkan-Headers.git
     pushd Vulkan-Headers
     mkdir build && pushd build
     cmake \
@@ -505,7 +587,7 @@ prepare_extra_common() {
 
     # Vulkan ICD Loader
     pushd ${SOURCE_DIR}
-    git clone -b v1.4.355 --depth=1 https://github.com/KhronosGroup/Vulkan-Loader.git
+    clone v1.4.355 https://github.com/KhronosGroup/Vulkan-Loader.git
     pushd Vulkan-Loader
     sed -i 's/memset(disable_struct, 0, sizeof.*);/& disable_struct->disable_all_implicit = 1;/' loader/loader_environment.c
     mkdir build && pushd build
@@ -529,7 +611,7 @@ prepare_extra_common() {
     # SHADERC
     shaderc_ver="v2026.2"
     pushd ${SOURCE_DIR}
-    git clone -b ${shaderc_ver} --depth=1 https://github.com/google/shaderc.git
+    clone ${shaderc_ver} https://github.com/google/shaderc.git
     pushd shaderc
     ./utils/git-sync-deps
     shaderc_conf=$(echo -GNinja \
@@ -639,7 +721,7 @@ prepare_extra_common() {
 
     # LIBPLACEBO
     pushd ${SOURCE_DIR}
-    git clone -b v7.360.1 --recursive --depth=1 https://github.com/haasn/libplacebo.git
+    CLONE_RECURSIVE=1 clone v7.360.1 https://github.com/haasn/libplacebo.git
     # Fix bit shift when importing P01x non-multiplane image
     git -C libplacebo apply ${SOURCE_DIR}/builder/patches/libplacebo/*.patch
     sed -i 's/env: python_env,//g' libplacebo/src/vulkan/meson.build
@@ -682,7 +764,7 @@ prepare_extra_amd64() {
 
     # INTEL-VAAPI-DRIVER
     pushd ${SOURCE_DIR}
-    git clone --depth=1 https://github.com/intel/intel-vaapi-driver.git
+    clone master https://github.com/intel/intel-vaapi-driver.git
     pushd intel-vaapi-driver
     ./autogen.sh
     ./configure LIBVA_DRIVERS_PATH=${TARGET_DIR}/lib/dri
@@ -695,7 +777,7 @@ prepare_extra_amd64() {
 
     # GMMLIB
     pushd ${SOURCE_DIR}
-    git clone -b intel-gmmlib-22.10.0 --depth=1 https://github.com/intel/gmmlib.git
+    clone intel-gmmlib-22.10.0 https://github.com/intel/gmmlib.git
     pushd gmmlib
     mkdir build && pushd build
     cmake -DCMAKE_INSTALL_PREFIX=${TARGET_DIR} ..
@@ -708,7 +790,7 @@ prepare_extra_amd64() {
     # MediaSDK (RT only)
     # Provides MSDK runtime (libmfxhw64.so.1) for 11th Gen Rocket Lake and older
     pushd ${SOURCE_DIR}
-    git clone -b intel-mediasdk-23.2.2 --depth=1 https://github.com/Intel-Media-SDK/MediaSDK.git
+    clone intel-mediasdk-23.2.2 https://github.com/Intel-Media-SDK/MediaSDK.git
     pushd MediaSDK
     # Fix build in gcc 13
     apply_local_patch mediasdk/8fb9f5f.patch git apply
@@ -733,7 +815,7 @@ prepare_extra_amd64() {
     # Provides VPL header and dispatcher (libvpl.so.2) for FFmpeg
     # Both MSDK and VPL runtime can be loaded by VPL dispatcher
     pushd ${SOURCE_DIR}
-    git clone -b v2.17.0 --depth=1 https://github.com/intel/libvpl.git
+    clone v2.17.0 https://github.com/intel/libvpl.git
     pushd libvpl
     sed -i 's|ParseEnvSearchPaths(ONEVPL_PRIORITY_PATH_VAR, searchDirList)|searchDirList.push_back("/usr/lib/flux-ffmpeg/lib")|g' libvpl/src/mfx_dispatcher_vpl_loader.cpp
     mkdir build && pushd build
@@ -756,7 +838,7 @@ prepare_extra_amd64() {
     # VPL-GPU-RT (RT only)
     # Provides VPL runtime (libmfx-gen.so.1.2) for 11th Gen Tiger Lake and newer
     pushd ${SOURCE_DIR}
-    git clone -b intel-onevpl-26.2.4 --depth=1 https://github.com/intel/vpl-gpu-rt.git
+    clone intel-onevpl-26.2.4 https://github.com/intel/vpl-gpu-rt.git
     pushd vpl-gpu-rt
     # Fix missing entries in PicStruct validation
     apply_local_patch vpl-gpu-rt/c7eb030.patch git apply
@@ -778,7 +860,7 @@ prepare_extra_amd64() {
     # Full Feature Build: ENABLE_KERNELS=ON(Default) ENABLE_NONFREE_KERNELS=ON(Default)
     # Free Kernel Build: ENABLE_KERNELS=ON ENABLE_NONFREE_KERNELS=OFF
     pushd ${SOURCE_DIR}
-    git clone -b intel-media-26.2.4 --depth=1 https://github.com/intel/media-driver.git
+    clone intel-media-26.2.4 https://github.com/intel/media-driver.git
     pushd media-driver
     # Enable VC1 decode on DG2 (note that MTL+ is not supported)
     apply_local_patch media-driver/e47702f.patch git apply
@@ -806,7 +888,7 @@ prepare_extra_amd64() {
 prepare_extra_arm() {
     # RKMPP
     pushd ${SOURCE_DIR}
-    git clone -b jellyfin-mpp-next --depth=1 https://github.com/nyanmisaka/rk-mirrors.git rkmpp
+    clone jellyfin-mpp-next https://github.com/nyanmisaka/rk-mirrors.git rkmpp
     pushd rkmpp
     mkdir rkmpp_build
     pushd rkmpp_build
@@ -825,7 +907,7 @@ prepare_extra_arm() {
 
     # RKRGA
     pushd ${SOURCE_DIR}
-    git clone -b jellyfin-rga-next --depth=1 https://github.com/nyanmisaka/rk-mirrors.git rkrga
+    clone jellyfin-rga-next https://github.com/nyanmisaka/rk-mirrors.git rkrga
     meson setup rkrga rkrga_build \
         ${MESON_CROSS_OPT} \
         --prefix=${TARGET_DIR} \

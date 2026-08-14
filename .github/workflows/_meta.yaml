@@ -44,8 +44,38 @@ jobs:
       - name: Install make and mmv
         run: sudo apt-get install make mmv
 
+      # Sources the build fetches, kept between runs.
+      #
+      # Retries alone never solved this. Each of the four jobs was fetching all
+      # thirty-five dependencies from scratch, twenty-seven of them from
+      # github.com, so a run meant a burst of well over a hundred requests from
+      # one unauthenticated runner pool. That is what gets throttled, and the
+      # AMF tarball proved patience does not help: it failed after three tries.
+      #
+      # `restore-keys` is safe here rather than merely convenient. Entries are
+      # keyed by URL *and* ref inside the cache, so an older cache cannot serve
+      # a tree for a pin that has since moved — it simply misses and refetches.
+      #
+      # Keyed by arch because the arm and amd paths fetch different sets. The
+      # two releases of the same arch share, and whichever finishes second is
+      # refused the save with a warning, which costs nothing.
+      - name: Cache fetched sources
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .sources
+          key: sources-${{ matrix.arch }}-${{ hashFiles('docker-build.sh') }}
+          restore-keys: |
+            sources-${{ matrix.arch }}-
+
       - name: Build Linux
         run: ./build ${{ matrix.release }} ${{ matrix.arch }} dist
+
+      # The build writes into the mount as root. Without this the cache save
+      # cannot read what it is meant to store, and fails at the end of a job
+      # that otherwise succeeded.
+      - name: Make the source cache readable
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" .sources
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

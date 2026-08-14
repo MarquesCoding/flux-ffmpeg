@@ -94,6 +94,16 @@ done
 image_name="flux-ffmpeg-build-${cli_release}"
 package_temporary_dir="$( mktemp -d )"
 
+# Sources fetched by the build, kept between runs.
+#
+# Deliberately not in the tempdir the trap removes: surviving the build is the
+# entire point. Every dependency was being fetched from scratch by each of the
+# four matrix jobs, which is what gets an unauthenticated runner rate limited.
+# CI restores this directory from actions/cache; a local build just accumulates
+# one and gets faster.
+source_cache_dir="${SOURCE_CACHE_DIR:-$( pwd )/.sources}"
+mkdir -p "${source_cache_dir}"
+
 # Trap cleanup for latter sections
 cleanup() {
     # Clean up the Dockerfile
@@ -108,7 +118,7 @@ make -f Dockerfile.make DISTRO=${release} GCC_VER=${gcc_ver} LLVM_VER=${llvm_ver
 # Set up the build environment docker image
 ${container_cmd} build . -t "${image_name}"
 # Build the APKs and copy out to ${package_temporary_dir}
-${container_cmd} run --rm -e "RELEASE=${release}" -v "${package_temporary_dir}:/dist" "${image_name}"
+${container_cmd} run --rm -e "RELEASE=${release}" -v "${package_temporary_dir}:/dist" -v "${source_cache_dir}:/sources" "${image_name}"
 # If no 3rd parameter was specified, move APKs to parent directory
 if [[ -z ${3} ]]; then
     path="../bin"
