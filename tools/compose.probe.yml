@@ -19,13 +19,13 @@ services:
       # The release whose deb gets probed. Must be a published release, not a
       # branch build: workflow artifacts need credentials this container has not
       # got.
-      VERSION: 8.1.2-2flux1
-      SUITE: bookworm
-      ARCH: amd64
+      VERSION: ${VERSION:-8.1.2-2flux1}
+      SUITE: ${SUITE:-bookworm}
+      ARCH: ${ARCH:-amd64}
       # Which revision of the probe to run. A branch moves under you; prefer a
       # tag or a commit SHA once one contains the script.
-      PROBE_REF: flux
-      FLUX_VAAPI_DEVICE: /dev/dri/renderD128
+      PROBE_REF: ${PROBE_REF:-flux}
+      FLUX_VAAPI_DEVICE: ${FLUX_VAAPI_DEVICE:-/dev/dri/renderD128}
     entrypoint: ['/bin/bash', '-euo', 'pipefail', '-c']
     command:
       - |
