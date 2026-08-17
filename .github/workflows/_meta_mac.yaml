@@ -25,9 +25,15 @@ jobs:
       # than on a developer's machine: it uninstalls Homebrew's cmake, and the
       # builder's own README notes it strips every libx11-linked package to keep
       # the binary portable. Neither is a thing to do to a machine somebody uses.
+      #
+      # Pinned by commit like every other action here, rather than tracking
+      # `master` the way upstream did. Homebrew deprecated that: the branch sync
+      # stops and the warning becomes an error at Homebrew 5.2.0, which was due
+      # no earlier than June and so can land at any time -- including during a
+      # release build.
       - name: Set up Homebrew
         id: set-up-homebrew
-        uses: Homebrew/actions/setup-homebrew@master # master
+        uses: Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c # 2026.07.10.1
 
       # FFBUILD_PREFIX in buildmac.sh. Every dependency installs here, so it has
       # to exist and be writable before the first one builds.
