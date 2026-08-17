@@ -1,10 +1,18 @@
-# jellyfin-ffmpeg portable versions builder for mac
+# flux-ffmpeg portable versions builder for mac
 
-Portable versions builder of jellyfin-ffmpeg for macOS.
+Portable versions builder of flux-ffmpeg for macOS.
 
 This script is generally made for GitHub Actions' CI runner, and there will be some caveats when running it locally.
 
 A significant limitation is that this script will mutate files in a way that prevents the script from being executed multiple times on a non-clean environment. Follow the instructions below to work with it.
+
+## Why this target exists
+
+VideoToolbox cannot be passed into a container on macOS. Docker Desktop runs a Linux VM, and so does Apple's own `container` framework; neither exposes the host's VideoToolbox. So anything containerised on a Mac transcodes in software, whatever the hardware underneath, and a Mac that wants its own encoder has to install natively.
+
+Homebrew's ffmpeg is not a substitute. It has `scale_vt`, which is upstream, and none of the VideoToolbox filters this repository patches in — so a Mac running on it burns subtitles and tone maps HDR in system memory. Flux probes the build and picks its route from what it finds, so that is slower rather than broken, but it is slower than the hardware can manage.
+
+Apple silicon only. `buildmac.sh` still knows how to cross-compile the Intel target, and CI does not ask it to: every VideoToolbox measurement so far is on Apple silicon and there is no Intel Mac to verify against.
 
 ## Package List
 
@@ -14,6 +22,12 @@ Every file corresponds to its respective package.
 For macOS, there will be additionally packages located in `images/macos` as extra static libs. The `00-dep.sh` will also setup necessary environment on a GitHub Runner. You can modify or remove it if you find it unnecessary.
 
 ## How to make a build
+
+CI is the intended place. `.github/workflows/_meta_mac.yaml` runs this on a
+`macos-latest` runner for every push and pull request, and attaches the tarball
+to the release when one is published.
+
+Prefer it to a local build, and not only out of convenience: `images/macos/00-dep.sh` uninstalls Homebrew's cmake, and the known issue below has CI removing every `libx11`-linked package to keep the binary portable. Neither is a thing to do to a machine somebody works on.
 
 ### Prerequisites
 
@@ -36,7 +50,7 @@ Generated artifacts will be stored to `artifacts` folder.
 
 ### Prepare for next running.
 
-To run another clean build, the easiest way is to remove the `FFBUILD_PREFIX` folder, and then remove `jellyfin-ffmpeg` and re-clone the repo.
+To run another clean build, the easiest way is to remove the `FFBUILD_PREFIX` folder, and then remove `flux-ffmpeg` and re-clone the repo.
 
 If you don't want to rebuild all the dependencies, you can keep the `FFBUILD_PREFIX` folder and remove/comment out the following lines:
 
@@ -57,7 +71,26 @@ for lib in scripts.d/*.sh; do
 done
 ```
 
-At this point, the repository could have our patches applied. You want to restore it with `quilt pop -af` before the next run.
+At this point, the repository could have our patches applied. You want to restore it with `QUILT_PATCHES=debian/patches quilt pop -af` before the next run.
+
+That variable is not optional here, and it is the same one `buildmac.sh` sets. quilt defaults to reading its series from `patches`, which upstream arranged with a symlink because upstream had no such directory. This repository does — `patches/` holds the third-party patches the Linux build applies — so pointing quilt at `debian/patches` explicitly is what keeps the two from colliding.
+
+## Installing what it produces
+
+The artefact is a tarball of two static binaries, so there is nothing to install
+beyond putting them somewhere and saying where:
+
+```sh
+sudo mkdir -p /usr/local/lib/flux-ffmpeg
+sudo tar -xJf flux-ffmpeg_*_portable_macarm64-gpl.tar.xz -C /usr/local/lib/flux-ffmpeg
+export FLUX_FFMPEG=/usr/local/lib/flux-ffmpeg/ffmpeg
+export FLUX_FFPROBE=/usr/local/lib/flux-ffmpeg/ffprobe
+```
+
+Those two variables are what the transcoder reads; without them it looks for
+`ffmpeg` on `PATH` and finds Homebrew's.
+
+`curl` does not set the quarantine attribute, so a tarball fetched from the release runs as is. One downloaded through a browser will be quarantined — `xattr -dr com.apple.quarantine` on the extracted binaries clears it.
 
 ## Known issue
 

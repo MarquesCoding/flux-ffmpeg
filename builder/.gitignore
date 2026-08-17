@@ -2,3 +2,10 @@
 /ffbuild/
 /artifacts/
 /.cache/
+/build/
+
+# Where buildmac.sh leaves the two binaries. It moves them here from the repo
+# root before tarring them, because macOS's own archive utility cannot open an
+# archive whose members came from a parent directory.
+/ffmpeg
+/ffprobe

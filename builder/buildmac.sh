@@ -75,28 +75,46 @@ done
 
 cd "$BUILDER_ROOT"
 cd ..
+# quilt reads its series from `patches` unless told otherwise, and upstream
+# pointed it there with a symlink. That worked while `patches` did not exist.
+# It does here -- it holds the third-party patches the Linux build applies --
+# so `ln` quietly succeeded by creating the link *inside* it, as a dangling
+# `patches/patches`. quilt then found no series and the build stopped before it
+# had applied a single one of the ninety-seven FFmpeg patches, the VideoToolbox
+# filters this target exists for among them.
+#
+# QUILT_PATCHES says the same thing without touching the working tree, so the
+# two directories stop competing for one name.
 if [[ -f "debian/patches/series" ]]; then
-    ln -s debian/patches patches
-    quilt push -a
+    QUILT_PATCHES=debian/patches quilt push -a
 fi
 
 ./configure --prefix=/ffbuild/prefix \
     $FFBUILD_TARGET_FLAGS \
     --host-cflags="$FF_HOST_CFLAGS" \
     --host-ldflags="$FF_HOST_LDFLAGS" \
-    --extra-version="Jellyfin" \
+    --extra-version="Flux" \
     --extra-cflags="$FF_CFLAGS" \
     --extra-cxxflags="$FF_CXXFLAGS" \
     --extra-ldflags="$FF_LDFLAGS" \
     --extra-ldexeflags="$FF_LDEXEFLAGS" \
     --extra-libs="$FF_LIBS" \
     $FF_CONFIGURE
-make -j$(nproc) V=1
+# nproc is coreutils, and Homebrew installs those commands prefixed with `g`.
+# Whether a bare `nproc` resolves depends on what else is on the runner's PATH,
+# which is not something a build should be deciding by accident. sysctl is in
+# the base system and answers the same question.
+make -j"$(sysctl -n hw.ncpu)" V=1
 
 # We have to manually match lines to get version as there will be no dpkg-parsechangelog on macOS
+#
+# Matching `jellyfin-ffmpeg` here no longer picked the top entry, because the
+# changelog keeps upstream's history below Flux's own. It matched the newest
+# *Jellyfin* entry instead and stamped the artefact 8.1.2-2 -- a real version,
+# just not this one, which is the kind of wrong that survives review.
 PKG_VER=0.0.0
 while IFS= read -r line; do
-    if [[ $line == jellyfin-ffmpeg* ]]; then
+    if [[ $line == flux-ffmpeg* ]]; then
         if [[ $line =~ \(([^\)]+)\) ]]; then
             PKG_VER="${BASH_REMATCH[1]}"
             break
@@ -104,7 +122,7 @@ while IFS= read -r line; do
     fi
 done < "$BUILDER_ROOT"/../debian/changelog
 
-PKG_NAME="jellyfin-ffmpeg_${PKG_VER}_portable_${TARGET}-${VARIANT}${ADDINS_STR:+-}${ADDINS_STR}"
+PKG_NAME="flux-ffmpeg_${PKG_VER}_portable_${TARGET}-${VARIANT}${ADDINS_STR:+-}${ADDINS_STR}"
 ARTIFACTS_PATH="$BUILDER_ROOT"/artifacts
 OUTPUT_FNAME="${PKG_NAME}.tar.xz"
 cd "$BUILDER_ROOT"
