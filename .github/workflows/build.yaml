@@ -20,9 +20,14 @@ on:
     paths-ignore:
       - '**/*.md'
 
-# Debian only, and only the codenames Flux's own image is built on. Upstream
-# also builds Ubuntu, Windows and macOS; Flux consumes none of them, and every
-# one of those jobs is build minutes spent on nothing.
+# Debian and macOS. Upstream also builds Ubuntu and Windows; Flux consumes
+# neither, and both are build minutes spent on nothing.
+#
+# macOS is here for a reason the container image cannot cover. VideoToolbox
+# cannot be passed into a container on a Mac -- Docker Desktop runs a Linux VM
+# and so does Apple's own `container` framework, so anything containerised
+# transcodes in software whatever the hardware underneath. A Mac that wants its
+# own encoder has to install natively, and a native install needs a build.
 jobs:
   build_debian:
     uses: ./.github/workflows/_meta.yaml
@@ -30,4 +35,9 @@ jobs:
       distro: 'debian'
       codenames: '["bookworm", "trixie"]'
       architectures: '["amd64", "arm64"]'
+      release: false
+
+  build_macos:
+    uses: ./.github/workflows/_meta_mac.yaml
+    with:
       release: false
