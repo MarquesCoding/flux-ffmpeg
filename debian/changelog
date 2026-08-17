@@ -1,3 +1,25 @@
+flux-ffmpeg (8.1.2-2flux2) unstable; urgency=medium
+
+  * Build for macOS on Apple silicon, publishing a portable tarball beside the
+    debs. VideoToolbox cannot be reached from inside a container on a Mac, so a
+    Mac serving Flux installs natively and had been falling back to Homebrew's
+    ffmpeg, which carries none of the VideoToolbox filters patched in here.
+  * Fixed the macOS builder, which had been left unreferenced and had stopped
+    working: it set quilt up with a symlink that now lands inside the vendored
+    patches directory, so none of the ninety-seven FFmpeg patches applied; it
+    reported the build as Jellyfin; and it read the version from a changelog
+    entry that is no longer the top one.
+  * Vendored the ten third-party patches the build used to download mid-build,
+    after two release builds died on unrelated downloads.
+  * Added a hardware probe that runs without a Flux checkout, reporting the
+    routes that keep subtitles and HDR on the device.
+  * Kept fetched sources between runs, so a rebuild does not ask thirty-five
+    third-party hosts for the same files again.
+  * Pinned the Homebrew setup action by commit, which Homebrew deprecated
+    tracking by branch.
+
+ -- Flux <noreply@users.noreply.github.com>  Mon, 17 Aug 2026 19:20:00 +0000
+
 flux-ffmpeg (8.1.2-2flux1) unstable; urgency=medium
 
   * Fork of jellyfin-ffmpeg 8.1.2-2 for Flux.
